@@ -2,7 +2,7 @@
 
 Get the Windows x64 or universal macOS launcher from the [latest launcher release](https://github.com/andymarkviera/Shipping-Lanes-Launcher/releases/latest).
 
-Open the launcher to check for and install the latest Shipping Lanes build. Sign in with your own ChatGPT account and choose a Shipping Lanes username to enable Play. The game package includes its runtime. The macOS launcher is not notarized.
+The launcher runs in a desktop window. Check for and install the latest Shipping Lanes build in that window. Sign in with your own ChatGPT account in the browser when prompted, then return to the launcher to play. The game package includes its runtime. The macOS launcher is not notarized.
 
 ## Release feed
 

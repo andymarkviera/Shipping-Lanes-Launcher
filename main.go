@@ -2,10 +2,9 @@ package main
 
 import (
 	"archive/zip"
-	"crypto/rand"
+	"context"
 	"crypto/sha256"
 	_ "embed"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -27,11 +26,8 @@ import (
 const repository = "https://api.github.com/repos/andymarkviera/Shipping-Lanes-Releases"
 const maxArchive = 1 << 30
 
-//go:embed launcher.html
-var page string
-
-//go:embed logo.webp
-var logo []byte
+//go:embed logo.png
+var brandPNG []byte
 
 type asset struct {
 	URL    string `json:"browser_download_url"`
@@ -55,19 +51,23 @@ type installed struct {
 }
 
 type status struct {
-	Username string `json:"username"`
-	Message  string `json:"message"`
-	Busy     bool   `json:"busy"`
+	AccountMessage string
+	Username       string
+	Message        string
+	Busy           bool
 
-	Available  string `json:"available"`
-	Installed  string `json:"installed"`
-	CanInstall bool   `json:"canInstall"`
-	Progress   int    `json:"progress"`
+	Available  string
+	Installed  string
+	CanInstall bool
+	Progress   int
 }
 
 type launcher struct {
+	ctx             context.Context
+	installs        sync.WaitGroup
 	accountState    string
 	accountName     string
+	accountMessage  string
 	accountSubject  string
 	accountDeadline time.Time
 	mu              sync.Mutex
@@ -81,66 +81,49 @@ type launcher struct {
 }
 
 func main() {
+	if err := runLauncher(); err != nil {
+		showLaunchError(err.Error())
+	}
+}
+
+func runLauncher() error {
 	root, err := os.UserConfigDir()
 	if err != nil {
-		panic(err)
+		return err
 	}
 	root = filepath.Join(root, "Shipping Lanes Launcher", "builds")
+	ctx, cancel := context.WithCancel(context.Background())
 	app := &launcher{
-		root:   root,
-		active: findInstalled(root),
-		state:  status{Message: "Checking GitHub for the latest game build.", Busy: true},
+		ctx:  ctx,
+		root: root, active: findInstalled(root),
+		state:  status{Message: "Checking for the latest game build…", Busy: true},
 		client: &http.Client{Timeout: 15 * time.Minute, CheckRedirect: githubRedirect},
 	}
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
-		panic(err)
+		cancel()
+		return err
 	}
 	host := listener.Addr().String()
-	var secret [24]byte
-	if _, err := rand.Read(secret[:]); err != nil {
-		panic(err)
-	}
-	key := "/" + hex.EncodeToString(secret[:]) + "/"
 	origin := "http://" + host
 	server := &http.Server{
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       10 * time.Second,
-		IdleTimeout:       60 * time.Second,
-		MaxHeaderBytes:    8192,
+		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second,
+		MaxHeaderBytes: 8192,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Host != host || r.URL.Path != "/account-callback" {
+				http.NotFound(w, r)
+				return
+			}
+			app.callback(w, r, origin)
+		}),
 	}
-	server.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Host != host || (!strings.HasPrefix(r.URL.Path, key) && r.URL.Path != "/account-callback") || (r.Header.Get("Origin") != "" && r.Header.Get("Origin") != origin) {
-			http.NotFound(w, r)
-			return
-		}
-		if r.URL.Path == "/account-callback" {
-			app.callback(w, r, origin, key)
-			return
-		}
-		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'self'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'")
-		path := strings.TrimPrefix(r.URL.Path, key)
-		switch {
-		case r.Method == "GET" && path == "":
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			_, _ = io.WriteString(w, strings.Replace(page, "{{LAUNCHER_LOGO}}", base64.StdEncoding.EncodeToString(logo), 1))
-		case r.Method == "GET" && path == "status":
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(app.snapshot())
-		case r.Method == "POST" && r.Header.Get("Origin") == origin:
-			app.handle(w, r, path, server)
-		default:
-			http.NotFound(w, r)
-		}
-	})
+	go server.Serve(listener)
 	go app.check()
-	if err := openURL(origin + key); err != nil {
-		panic(err)
-	}
-	_ = server.Serve(listener)
+	err = desktopWindow(app, host)
+	cancel()
+	_ = server.Close()
+	app.installs.Wait()
+	return err
 }
 
 func openURL(address string) error {
@@ -155,84 +138,68 @@ func (l *launcher) snapshot() status {
 	defer l.mu.Unlock()
 	s := l.state
 	s.Username = l.accountName
+	s.AccountMessage = l.accountMessage
 	s.Installed = l.active.Tag
 	s.Available = l.release.Tag
 	s.CanInstall = l.asset.ID != 0 && l.asset.ID != l.active.Asset && !s.Busy
 	return s
 }
 
-func (l *launcher) handle(w http.ResponseWriter, r *http.Request, path string, server *http.Server) {
+func (l *launcher) action(command, host string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if path == "signin" {
-		if err := l.beginSignIn(r.Host); err != nil {
-			http.Error(w, "Could not start sign-in.", 500)
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	if path == "signout" {
-		l.accountState, l.accountName, l.accountSubject = "", "", ""
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	if path == "play" && l.accountSubject == "" {
-		http.Error(w, "Sign in to play.", http.StatusForbidden)
-		return
-	}
-	if path == "play" && l.active.Asset != 0 {
-		entry := filepath.Join(l.root, strconv.FormatInt(l.active.Asset, 10), l.active.Entry)
-		var command *exec.Cmd
-		if runtime.GOOS == "darwin" {
-			command = exec.Command("/usr/bin/open", entry)
+	switch command {
+	case "signin":
+		if err := l.beginSignIn(host); err != nil {
+			l.accountMessage = "Could not open sign-in."
 		} else {
-			command = exec.Command(entry)
-			command.Dir = filepath.Dir(entry)
+			l.accountMessage = "Complete sign-in in your browser."
 		}
-		if err := command.Start(); err != nil {
-			l.state.Message = "The game could not open. Check that the installed game files are still present."
-		} else {
-			l.state.Message = "Opening Shipping Lanes…"
+	case "signout":
+		l.accountState, l.accountName, l.accountSubject, l.accountMessage = "", "", "", ""
+	case "play":
+		if l.active.Asset != 0 && l.accountSubject != "" {
+			l.play()
+		}
+	case "check":
+		if !l.state.Busy {
+			l.state = status{Busy: true, Message: "Checking for the latest game build…"}
+			go l.check()
+		}
+	case "install":
+		if !l.state.Busy && l.asset.ID != 0 && l.asset.ID != l.active.Asset {
+			l.state = status{Busy: true, Message: "Downloading the game…"}
+			tag, file := l.release.Tag, l.asset
+			l.installs.Add(1)
 			go func() {
-				if err := command.Wait(); err != nil && runtime.GOOS == "darwin" {
-					l.mu.Lock()
-					l.state.Message = "macOS could not open this build. Check the app in Finder or review macOS Privacy & Security."
-					l.mu.Unlock()
-				}
+				defer l.installs.Done()
+				l.install(tag, file)
 			}()
 		}
-		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func (l *launcher) play() {
+	entry := filepath.Join(l.root, strconv.FormatInt(l.active.Asset, 10), l.active.Entry)
+	var command *exec.Cmd
+	if runtime.GOOS == "darwin" {
+		command = exec.Command("/usr/bin/open", entry)
+	} else {
+		command = exec.Command(entry)
+		command.Dir = filepath.Dir(entry)
+	}
+	if err := command.Start(); err != nil {
+		l.state.Message = "The game could not open. Check that the installed game files are still present."
 		return
 	}
-	if path == "quit" {
-		w.WriteHeader(http.StatusNoContent)
-		go func() {
-			time.Sleep(150 * time.Millisecond)
-			_ = server.Close()
-		}()
-		return
-	}
-	if l.state.Busy {
-		http.Error(w, "Another operation is running.", http.StatusConflict)
-		return
-	}
-	switch path {
-	case "check":
-		l.state = status{Busy: true, Message: "Checking GitHub…"}
-		go l.check()
-	case "install":
-		if l.asset.ID == 0 || l.asset.ID == l.active.Asset {
-			http.Error(w, "No update available.", http.StatusConflict)
-			return
+	l.state.Message = "Opening Shipping Lanes…"
+	go func() {
+		if err := command.Wait(); err != nil && runtime.GOOS == "darwin" {
+			l.mu.Lock()
+			l.state.Message = "macOS could not open this game build."
+			l.mu.Unlock()
 		}
-		l.state = status{Busy: true, Message: "Downloading the game…"}
-		go l.install(l.release.Tag, l.asset)
-	default:
-		http.NotFound(w, r)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
+	}()
 }
 
 func githubRedirect(req *http.Request, via []*http.Request) error {
@@ -244,12 +211,16 @@ func githubRedirect(req *http.Request, via []*http.Request) error {
 }
 
 func (l *launcher) request(address, accept string) (*http.Response, error) {
-	req, err := http.NewRequest("GET", address, nil)
+	ctx := l.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", address, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Accept", accept)
-	req.Header.Set("User-Agent", "Shipping-Lanes-Launcher/1.1")
+	req.Header.Set("User-Agent", "Shipping-Lanes-Launcher/1.2")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	response, err := l.client.Do(req)
 	if err != nil {

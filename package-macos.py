@@ -24,14 +24,14 @@ info = {
     "CFBundleName": "Shipping Lanes Launcher",
     "CFBundleDisplayName": "Shipping Lanes Launcher",
     "CFBundlePackageType": "APPL",
-    "CFBundleVersion": "2",
-    "CFBundleShortVersionString": "1.1.0",
+    "CFBundleVersion": "3",
+    "CFBundleShortVersionString": "1.2.0",
     "LSMinimumSystemVersion": "13.0",
-    "LSUIElement": True,
 }
 with ZipFile(packages / "Shipping-Lanes-Launcher-macOS.zip", "w", ZIP_DEFLATED) as app:
     for name, value, mode in [
         ("Info.plist", plistlib.dumps(info), 0o644),
+        ("Resources/LICENSE-purego", Path(__file__).with_name("LICENSE-purego").read_bytes(), 0o644),
         ("MacOS/ShippingLanesLauncher", binary, 0o755),
     ]:
         entry = ZipInfo("Shipping Lanes Launcher.app/Contents/" + name)

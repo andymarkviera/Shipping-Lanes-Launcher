@@ -75,11 +75,21 @@ func (l *launcher) beginSignIn(host string) error {
 	l.accountState = hex.EncodeToString(bytes[:])
 	l.accountDeadline = time.Now().Add(10 * time.Minute)
 	target := accountSite + "/account?" + url.Values{"state": {l.accountState}, "port": {port}}.Encode()
-	go func() { _ = openURL(target) }()
+	state := l.accountState
+	go func() {
+		if err := openURL(target); err != nil {
+			l.mu.Lock()
+			if l.accountState == state {
+				l.accountState = ""
+				l.accountMessage = "Could not open sign-in in your browser."
+			}
+			l.mu.Unlock()
+		}
+	}()
 	return nil
 }
 
-func (l *launcher) callback(w http.ResponseWriter, r *http.Request, origin, home string) {
+func (l *launcher) callback(w http.ResponseWriter, r *http.Request, origin string) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -109,8 +119,8 @@ func (l *launcher) callback(w http.ResponseWriter, r *http.Request, origin, home
 		l.accountState = ""
 		l.accountName = claim.Username
 		l.accountSubject = claim.Subject
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"home": home})
+		l.accountMessage = ""
+		w.WriteHeader(http.StatusNoContent)
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
@@ -128,8 +138,7 @@ if (!proof) {
 } else {
   fetch('/account-callback',{method:'POST',body:proof}).then(async response => {
     if (!response.ok) throw new Error();
-    const result = await response.json();
-    location.replace(result.home);
+    statusText.textContent = 'Signed in. You can close this tab and return to the desktop launcher.';
   }).catch(() => {
     statusText.textContent = 'Sign-in expired. Return to the launcher and try again.';
   });
