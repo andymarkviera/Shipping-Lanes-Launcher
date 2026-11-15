@@ -1,0 +1,4 @@
+/out/
+*.exe
+launcher-darwin-*
+*.zip
