@@ -79,15 +79,15 @@ type bitmapHeader struct {
 	colors, important        uint32
 }
 type desktopWin struct {
-	app                                *launcher
-	host                               string
-	hwnd, brush, font, instance        uintptr
-	status, version, profile, progress uintptr
-	install, play, check, signin       uintptr
-	frameScale                         int
-	pixels                             []byte
-	imageWidth, imageHeight            int
-	rendered                           status
+	app *launcher
+
+	hwnd, brush, font, instance             uintptr
+	status, version, profile, progress      uintptr
+	install, play, check, signin, uninstall uintptr
+	frameScale                              int
+	pixels                                  []byte
+	imageWidth, imageHeight                 int
+	rendered                                status
 }
 
 const (
@@ -101,14 +101,15 @@ const (
 	idPlay       = 102
 	idCheck      = 103
 	idSignIn     = 104
+	idUninstall  = 105
 )
 
-func desktopWindow(app *launcher, host string) error {
+func desktopWindow(app *launcher) error {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	_ = win(user32, "SetProcessDPIAware")
 	win(controls, "InitCommonControls")
-	w := &desktopWin{app: app, host: host, frameScale: 96}
+	w := &desktopWin{app: app, frameScale: 96}
 	if dpi := user32.NewProc("GetDpiForSystem"); dpi.Find() == nil {
 		if value, _, _ := dpi.Call(); value != 0 {
 			w.frameScale = int(value)
@@ -176,9 +177,10 @@ func (w *desktopWin) makeControls() bool {
 	w.install = w.child("BUTTON", "Download game", 35, 270, 172, 42, idDownload, 0x10000)
 	w.play = w.child("BUTTON", "Play", 219, 270, 145, 42, idPlay, 0x10001)
 	w.check = w.child("BUTTON", "Check for updates", 376, 270, 209, 42, idCheck, 0x10000)
-	w.profile = w.child("STATIC", "", 35, 351, 315, 42, 0, 0)
-	w.signin = w.child("BUTTON", "Sign in or create an account", 355, 347, 230, 42, idSignIn, 0x10000)
-	return w.status != 0 && w.version != 0 && w.progress != 0 && w.install != 0 && w.play != 0 && w.check != 0 && w.profile != 0 && w.signin != 0
+	w.profile = w.child("STATIC", "", 35, 319, 550, 24, 0, 0)
+	w.signin = w.child("BUTTON", "Sign in or create an account", 35, 354, 250, 42, idSignIn, 0x10000)
+	w.uninstall = w.child("BUTTON", "Uninstall game", 373, 354, 212, 42, idUninstall, 0x10000)
+	return w.uninstall != 0 && w.status != 0 && w.version != 0 && w.progress != 0 && w.install != 0 && w.play != 0 && w.check != 0 && w.profile != 0 && w.signin != 0
 }
 func (w *desktopWin) refresh() {
 	state := w.app.snapshot()
@@ -194,6 +196,7 @@ func (w *desktopWin) refresh() {
 	win(user32, "EnableWindow", w.install, flag(state.CanInstall))
 	win(user32, "EnableWindow", w.play, flag(state.Installed != "" && state.Username != ""))
 	win(user32, "EnableWindow", w.check, flag(!state.Busy))
+	win(user32, "EnableWindow", w.uninstall, flag(!state.Busy && state.Installed != ""))
 	win(user32, "ShowWindow", w.progress, 5*flag(state.Busy && state.Progress > 0))
 	win(user32, "SendMessageW", w.progress, 0x0402, uintptr(state.Progress), 0)
 }
@@ -216,6 +219,11 @@ func (w *desktopWin) windowProc(hwnd uintptr, msg uint32, wp, lp uintptr) uintpt
 			action = "play"
 		case idCheck:
 			action = "check"
+		case idUninstall:
+			answer := win(user32, "MessageBoxW", w.hwnd, wide("Remove the installed Shipping Lanes game files? Your saves will be kept."), wide("Uninstall game"), 0x124)
+			if answer == 6 {
+				action = "uninstall"
+			}
 		case idSignIn:
 			action = "signin"
 			if w.app.snapshot().Username != "" {
@@ -223,7 +231,7 @@ func (w *desktopWin) windowProc(hwnd uintptr, msg uint32, wp, lp uintptr) uintpt
 			}
 		}
 		if action != "" {
-			w.app.action(action, w.host)
+			w.app.action(action)
 			w.refresh()
 			return 0
 		}

@@ -33,20 +33,20 @@ func tint(r, g, b float64) objc.ID {
 }
 
 type desktopMac struct {
-	app                                                              *launcher
-	host                                                             string
-	application, window                                              objc.ID
-	status, version, profile, progress, install, play, check, signin objc.ID
-	rendered                                                         status
+	app *launcher
+
+	application, window                                                         objc.ID
+	status, version, profile, progress, install, play, check, signin, uninstall objc.ID
+	rendered                                                                    status
 }
 
-func desktopWindow(app *launcher, host string) error {
+func desktopWindow(app *launcher) error {
 	if _, err := purego.Dlopen("/System/Library/Frameworks/AppKit.framework/AppKit", purego.RTLD_GLOBAL|purego.RTLD_LAZY); err != nil {
 		return err
 	}
 	pool := send(send(obj("NSAutoreleasePool"), "alloc"), "init")
 	defer send(pool, "drain")
-	w := &desktopMac{app: app, host: host}
+	w := &desktopMac{app: app}
 	w.application = send(obj("NSApplication"), "sharedApplication")
 	send(w.application, "setActivationPolicy:", 0)
 	w.window = send(send(obj("NSWindow"), "alloc"), "initWithContentRect:styleMask:backing:defer:", cocoaFrame(0, 0, 620, 420), 7, 2, false)
@@ -67,6 +67,7 @@ func desktopWindow(app *launcher, host string) error {
 		method("downloadGame:", func() { w.action("install") }),
 		method("playGame:", func() { w.action("play") }),
 		method("checkUpdates:", func() { w.action("check") }),
+		method("uninstallGame:", w.confirmUninstall),
 		method("signIn:", func() {
 			if w.app.snapshot().Username == "" {
 				w.action("signin")
@@ -164,12 +165,13 @@ func (w *desktopMac) controls(target objc.ID) {
 	w.install = button("Download game", "downloadGame:", 34, 108, 174)
 	w.play = button("Play", "playGame:", 219, 108, 146)
 	w.check = button("Check for updates", "checkUpdates:", 376, 108, 210)
-	w.profile = label(34, 33, 310, 30, 15)
-	w.signin = button("Sign in or create an account", "signIn:", 353, 29, 233)
+	w.profile = label(34, 69, 552, 25, 15)
+	w.signin = button("Sign in or create an account", "signIn:", 34, 24, 250)
+	w.uninstall = button("Uninstall game", "uninstallGame:", 373, 24, 212)
 }
 
 func (w *desktopMac) action(action string) {
-	w.app.action(action, w.host)
+	w.app.action(action)
 	w.refresh()
 }
 func (w *desktopMac) refresh() {
@@ -188,6 +190,7 @@ func (w *desktopMac) refresh() {
 	send(w.install, "setEnabled:", state.CanInstall)
 	send(w.play, "setEnabled:", state.Installed != "" && state.Username != "")
 	send(w.check, "setEnabled:", !state.Busy)
+	send(w.uninstall, "setEnabled:", !state.Busy && state.Installed != "")
 	send(w.progress, "setHidden:", !state.Busy || state.Progress == 0)
 	send(w.progress, "setDoubleValue:", float64(state.Progress))
 }
@@ -204,4 +207,16 @@ func showLaunchError(msg string) {
 	send(alert, "setMessageText:", text("Shipping Lanes Launcher"))
 	send(alert, "setInformativeText:", text(msg))
 	send(alert, "runModal")
+}
+
+func (w *desktopMac) confirmUninstall() {
+	alert := send(send(obj("NSAlert"), "alloc"), "init")
+	defer send(alert, "release")
+	send(alert, "setMessageText:", text("Uninstall Shipping Lanes?"))
+	send(alert, "setInformativeText:", text("The installed game files will be removed. Your saves will be kept."))
+	send(alert, "addButtonWithTitle:", text("Cancel"))
+	send(alert, "addButtonWithTitle:", text("Uninstall"))
+	if send(alert, "runModal") == 1001 {
+		w.action("uninstall")
+	}
 }

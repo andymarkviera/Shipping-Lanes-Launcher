@@ -24,8 +24,8 @@ info = {
     "CFBundleName": "Shipping Lanes Launcher",
     "CFBundleDisplayName": "Shipping Lanes Launcher",
     "CFBundlePackageType": "APPL",
-    "CFBundleVersion": "3",
-    "CFBundleShortVersionString": "1.2.0",
+    "CFBundleVersion": "4",
+    "CFBundleShortVersionString": "1.2.1",
     "LSMinimumSystemVersion": "13.0",
 }
 with ZipFile(packages / "Shipping-Lanes-Launcher-macOS.zip", "w", ZIP_DEFLATED) as app:

@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -63,15 +62,14 @@ type status struct {
 }
 
 type launcher struct {
-	ctx             context.Context
-	installs        sync.WaitGroup
-	accountState    string
-	accountName     string
-	accountMessage  string
-	accountSubject  string
-	accountDeadline time.Time
-	mu              sync.Mutex
-	root            string
+	ctx            context.Context
+	installs       sync.WaitGroup
+	accountState   string
+	accountName    string
+	accountMessage string
+	accountSubject string
+	mu             sync.Mutex
+	root           string
 
 	release release
 	asset   asset
@@ -99,29 +97,9 @@ func runLauncher() error {
 		state:  status{Message: "Checking for the latest game build…", Busy: true},
 		client: &http.Client{Timeout: 15 * time.Minute, CheckRedirect: githubRedirect},
 	}
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		cancel()
-		return err
-	}
-	host := listener.Addr().String()
-	origin := "http://" + host
-	server := &http.Server{
-		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second,
-		MaxHeaderBytes: 8192,
-		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Host != host || r.URL.Path != "/account-callback" {
-				http.NotFound(w, r)
-				return
-			}
-			app.callback(w, r, origin)
-		}),
-	}
-	go server.Serve(listener)
 	go app.check()
-	err = desktopWindow(app, host)
+	err = desktopWindow(app)
 	cancel()
-	_ = server.Close()
 	app.installs.Wait()
 	return err
 }
@@ -145,12 +123,12 @@ func (l *launcher) snapshot() status {
 	return s
 }
 
-func (l *launcher) action(command, host string) {
+func (l *launcher) action(command string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	switch command {
 	case "signin":
-		if err := l.beginSignIn(host); err != nil {
+		if err := l.beginSignIn(); err != nil {
 			l.accountMessage = "Could not open sign-in."
 		} else {
 			l.accountMessage = "Complete sign-in in your browser."
@@ -165,6 +143,15 @@ func (l *launcher) action(command, host string) {
 		if !l.state.Busy {
 			l.state = status{Busy: true, Message: "Checking for the latest game build…"}
 			go l.check()
+		}
+	case "uninstall":
+		if !l.state.Busy && l.active.Asset != 0 {
+			l.state = status{Busy: true, Message: "Uninstalling the game…"}
+			l.installs.Add(1)
+			go func() {
+				defer l.installs.Done()
+				l.uninstall()
+			}()
 		}
 	case "install":
 		if !l.state.Busy && l.asset.ID != 0 && l.asset.ID != l.active.Asset {
@@ -220,7 +207,7 @@ func (l *launcher) request(address, accept string) (*http.Response, error) {
 		return nil, err
 	}
 	req.Header.Set("Accept", accept)
-	req.Header.Set("User-Agent", "Shipping-Lanes-Launcher/1.2")
+	req.Header.Set("User-Agent", "Shipping-Lanes-Launcher/1.2.1")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	response, err := l.client.Do(req)
 	if err != nil {
@@ -451,7 +438,7 @@ func findGame(root string) (string, error) {
 	return filepath.Rel(root, matches[0])
 }
 
-func readReceipt(dir string) (installed, bool) {
+func loadReceipt(dir string) (installed, bool) {
 	var result installed
 	raw, err := os.ReadFile(filepath.Join(dir, ".shipping-lanes-build.json"))
 	if err != nil || json.Unmarshal(raw, &result) != nil || result.Asset <= 0 || !filepath.IsLocal(result.Entry) {
@@ -460,7 +447,15 @@ func readReceipt(dir string) (installed, bool) {
 	if filepath.Base(dir) != strconv.FormatInt(result.Asset, 10) {
 		return installed{}, false
 	}
-	_, err = os.Stat(filepath.Join(dir, result.Entry))
+	return result, true
+}
+
+func readReceipt(dir string) (installed, bool) {
+	result, ok := loadReceipt(dir)
+	if !ok {
+		return installed{}, false
+	}
+	_, err := os.Stat(filepath.Join(dir, result.Entry))
 	return result, err == nil
 }
 
@@ -473,4 +468,41 @@ func findInstalled(root string) installed {
 		}
 	}
 	return latest
+}
+
+func (l *launcher) uninstall() {
+	err := uninstallBuilds(l.root)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.active = findInstalled(l.root)
+	l.state = status{Message: "Game uninstalled. Your saves are still on this PC."}
+	if runtime.GOOS == "darwin" {
+		l.state.Message = "Game uninstalled. Your saves are still on this Mac."
+	}
+	if err != nil {
+		l.state.Message = "Could not remove all game files. Close the game and try again."
+	}
+}
+
+func uninstallBuilds(root string) error {
+	entries, err := os.ReadDir(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, dir := range entries {
+		if !dir.IsDir() || dir.Type()&os.ModeSymlink != 0 {
+			continue
+		}
+		path := filepath.Join(root, dir.Name())
+		if _, ok := loadReceipt(path); !ok {
+			continue
+		}
+		if err := os.RemoveAll(path); err != nil {
+			return err
+		}
+	}
+	return nil
 }

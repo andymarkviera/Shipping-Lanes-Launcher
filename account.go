@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/rand"
 	"crypto/sha256"
@@ -9,9 +10,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
-	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -63,84 +64,91 @@ func verifyAccount(proof, state string, now time.Time) (accountClaim, error) {
 	return claim, nil
 }
 
-func (l *launcher) beginSignIn(host string) error {
-	_, port, err := net.SplitHostPort(host)
-	if err != nil {
-		return err
-	}
+func (l *launcher) beginSignIn() error {
 	var bytes [32]byte
 	if _, err := rand.Read(bytes[:]); err != nil {
 		return err
 	}
-	l.accountState = hex.EncodeToString(bytes[:])
-	l.accountDeadline = time.Now().Add(10 * time.Minute)
-	target := accountSite + "/account?" + url.Values{"state": {l.accountState}, "port": {port}}.Encode()
-	state := l.accountState
+	secret := hex.EncodeToString(bytes[:])
+	deadline := time.Now().Add(10 * time.Minute)
+	l.accountState = secret
+	challenge := fmt.Sprintf("%x", sha256.Sum256([]byte(secret)))
+	target := accountSite + "/account?" + url.Values{"device": {challenge}}.Encode()
 	go func() {
 		if err := openURL(target); err != nil {
-			l.mu.Lock()
-			if l.accountState == state {
-				l.accountState = ""
-				l.accountMessage = "Could not open sign-in in your browser."
-			}
-			l.mu.Unlock()
+			l.finishSignIn(secret, accountClaim{}, "Could not open sign-in in your browser.")
+			return
 		}
+		l.pollSignIn(secret, challenge, deadline)
 	}()
 	return nil
 }
 
-func (l *launcher) callback(w http.ResponseWriter, r *http.Request, origin string) {
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Referrer-Policy", "no-referrer")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'")
-	switch r.Method {
-	case http.MethodGet:
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = io.WriteString(w, callbackPage)
-	case http.MethodPost:
-		if r.Header.Get("Origin") != origin {
-			http.Error(w, "Invalid sign-in origin", 403)
-			return
-		}
-		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 2048))
-		if err != nil {
-			http.Error(w, "Invalid sign-in", 400)
-			return
-		}
+func (l *launcher) pollSignIn(secret, challenge string, deadline time.Time) {
+	ctx, cancel := context.WithDeadline(l.ctx, deadline)
+	defer cancel()
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
 		l.mu.Lock()
-		defer l.mu.Unlock()
-		now := time.Now()
-		claim, err := verifyAccount(string(body), l.accountState, now)
-		if err != nil || now.After(l.accountDeadline) {
-			http.Error(w, "Sign-in expired. Start again in the launcher.", 403)
+		current := l.accountState == secret
+		l.mu.Unlock()
+		if !current {
 			return
 		}
-		l.accountState = ""
-		l.accountName = claim.Username
-		l.accountSubject = claim.Subject
-		l.accountMessage = ""
-		w.WriteHeader(http.StatusNoContent)
-	default:
-		w.WriteHeader(http.StatusMethodNotAllowed)
+		proof := l.fetchProof(ctx, secret)
+		if proof != "" {
+			claim, err := verifyAccount(proof, challenge, time.Now())
+			if err == nil {
+				l.finishSignIn(secret, claim, "")
+				return
+			}
+			l.finishSignIn(secret, accountClaim{}, "Sign-in expired. Try again from the launcher.")
+			return
+		}
+		select {
+		case <-ticker.C:
+		case <-ctx.Done():
+			l.finishSignIn(secret, accountClaim{}, "Sign-in expired. Try again from the launcher.")
+			return
+		}
 	}
 }
 
-const callbackPage = `<!doctype html><html lang="en"><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Shipping Lanes sign-in</title><main><h1>Shipping Lanes</h1><p id="status" role="status">Connecting your account…</p></main>
-<script>
-const statusText = document.querySelector('#status');
-const proof = location.hash.slice(1);
-history.replaceState(null, '', location.pathname);
-if (!proof) {
-  statusText.textContent = 'Start sign-in from the launcher.';
-} else {
-  fetch('/account-callback',{method:'POST',body:proof}).then(async response => {
-    if (!response.ok) throw new Error();
-    statusText.textContent = 'Signed in. You can close this tab and return to the desktop launcher.';
-  }).catch(() => {
-    statusText.textContent = 'Sign-in expired. Return to the launcher and try again.';
-  });
+func (l *launcher) fetchProof(ctx context.Context, secret string) string {
+	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, accountSite+"/account/device", strings.NewReader(secret))
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("Content-Type", "text/plain")
+	req.Header.Set("User-Agent", "Shipping-Lanes-Launcher/1.2.1")
+	// The redeem request contains a private challenge secret. Never redirect it.
+	client := http.Client{Transport: l.client.Transport, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
+	result, err := client.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer result.Body.Close()
+	if result.StatusCode != http.StatusOK {
+		return ""
+	}
+	body, err := io.ReadAll(io.LimitReader(result.Body, 2049))
+	if err != nil || len(body) > 2048 {
+		return ""
+	}
+	return string(body)
 }
-</script></html>`
+
+func (l *launcher) finishSignIn(secret string, claim accountClaim, message string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.accountState != secret {
+		return
+	}
+	l.accountState = ""
+	l.accountName = claim.Username
+	l.accountSubject = claim.Subject
+	l.accountMessage = message
+}
