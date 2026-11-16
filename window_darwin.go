@@ -35,9 +35,9 @@ func tint(r, g, b float64) objc.ID {
 type desktopMac struct {
 	app *launcher
 
-	application, window                                                         objc.ID
-	status, version, profile, progress, install, play, check, signin, uninstall objc.ID
-	rendered                                                                    status
+	application, window                                        objc.ID
+	status, version, progress, install, play, check, uninstall objc.ID
+	rendered                                                   status
 }
 
 func desktopWindow(app *launcher) error {
@@ -68,13 +68,6 @@ func desktopWindow(app *launcher) error {
 		method("playGame:", func() { w.action("play") }),
 		method("checkUpdates:", func() { w.action("check") }),
 		method("uninstallGame:", w.confirmUninstall),
-		method("signIn:", func() {
-			if w.app.snapshot().Username == "" {
-				w.action("signin")
-			} else {
-				w.action("signout")
-			}
-		}),
 		method("closeLauncher:", func() { send(w.window, "close") }),
 		method("windowWillClose:", func() { send(w.application, "stop:", objc.ID(0)) }),
 	})
@@ -165,8 +158,6 @@ func (w *desktopMac) controls(target objc.ID) {
 	w.install = button("Download game", "downloadGame:", 34, 108, 174)
 	w.play = button("Play", "playGame:", 219, 108, 146)
 	w.check = button("Check for updates", "checkUpdates:", 376, 108, 210)
-	w.profile = label(34, 69, 552, 25, 15)
-	w.signin = button("Sign in or create an account", "signIn:", 34, 24, 250)
 	w.uninstall = button("Uninstall game", "uninstallGame:", 373, 24, 212)
 }
 
@@ -184,11 +175,9 @@ func (w *desktopMac) refresh() {
 	defer send(pool, "drain")
 	send(w.status, "setStringValue:", text(state.Message))
 	send(w.version, "setStringValue:", text(state.versions()))
-	send(w.profile, "setStringValue:", text(state.profile()))
-	send(w.signin, "setTitle:", text(state.signInTitle()))
 	send(w.install, "setTitle:", text(state.installTitle()))
 	send(w.install, "setEnabled:", state.CanInstall)
-	send(w.play, "setEnabled:", state.Installed != "" && state.Username != "")
+	send(w.play, "setEnabled:", state.Installed != "")
 	send(w.check, "setEnabled:", !state.Busy)
 	send(w.uninstall, "setEnabled:", !state.Busy && state.Installed != "")
 	send(w.progress, "setHidden:", !state.Busy || state.Progress == 0)

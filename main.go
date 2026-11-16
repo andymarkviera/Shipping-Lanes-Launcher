@@ -50,10 +50,8 @@ type installed struct {
 }
 
 type status struct {
-	AccountMessage string
-	Username       string
-	Message        string
-	Busy           bool
+	Message string
+	Busy    bool
 
 	Available  string
 	Installed  string
@@ -62,14 +60,10 @@ type status struct {
 }
 
 type launcher struct {
-	ctx            context.Context
-	installs       sync.WaitGroup
-	accountState   string
-	accountName    string
-	accountMessage string
-	accountSubject string
-	mu             sync.Mutex
-	root           string
+	ctx      context.Context
+	installs sync.WaitGroup
+	mu       sync.Mutex
+	root     string
 
 	release release
 	asset   asset
@@ -104,19 +98,10 @@ func runLauncher() error {
 	return err
 }
 
-func openURL(address string) error {
-	if runtime.GOOS == "windows" {
-		return exec.Command("rundll32.exe", "url.dll,FileProtocolHandler", address).Run()
-	}
-	return exec.Command("/usr/bin/open", address).Run()
-}
-
 func (l *launcher) snapshot() status {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	s := l.state
-	s.Username = l.accountName
-	s.AccountMessage = l.accountMessage
 	s.Installed = l.active.Tag
 	s.Available = l.release.Tag
 	s.CanInstall = l.asset.ID != 0 && l.asset.ID != l.active.Asset && !s.Busy
@@ -127,16 +112,8 @@ func (l *launcher) action(command string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	switch command {
-	case "signin":
-		if err := l.beginSignIn(); err != nil {
-			l.accountMessage = "Could not open sign-in."
-		} else {
-			l.accountMessage = "Complete sign-in in your browser."
-		}
-	case "signout":
-		l.accountState, l.accountName, l.accountSubject, l.accountMessage = "", "", "", ""
 	case "play":
-		if l.active.Asset != 0 && l.accountSubject != "" {
+		if l.active.Asset != 0 {
 			l.play()
 		}
 	case "check":
@@ -207,7 +184,7 @@ func (l *launcher) request(address, accept string) (*http.Response, error) {
 		return nil, err
 	}
 	req.Header.Set("Accept", accept)
-	req.Header.Set("User-Agent", "Shipping-Lanes-Launcher/1.2.1")
+	req.Header.Set("User-Agent", "Shipping-Lanes-Launcher/1.3.0")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	response, err := l.client.Do(req)
 	if err != nil {

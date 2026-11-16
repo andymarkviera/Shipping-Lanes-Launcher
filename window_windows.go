@@ -81,13 +81,13 @@ type bitmapHeader struct {
 type desktopWin struct {
 	app *launcher
 
-	hwnd, brush, font, instance             uintptr
-	status, version, profile, progress      uintptr
-	install, play, check, signin, uninstall uintptr
-	frameScale                              int
-	pixels                                  []byte
-	imageWidth, imageHeight                 int
-	rendered                                status
+	hwnd, brush, font, instance     uintptr
+	status, version, progress       uintptr
+	install, play, check, uninstall uintptr
+	frameScale                      int
+	pixels                          []byte
+	imageWidth, imageHeight         int
+	rendered                        status
 }
 
 const (
@@ -100,7 +100,6 @@ const (
 	idDownload   = 101
 	idPlay       = 102
 	idCheck      = 103
-	idSignIn     = 104
 	idUninstall  = 105
 )
 
@@ -123,7 +122,7 @@ func desktopWindow(app *launcher) error {
 	w.decodeLogo()
 	cursor := win(user32, "LoadCursorW", 0, 32512)
 	className := wide("ShippingLanesDesktop")
-	class := wndClass{proc: syscall.NewCallback(w.windowProc), instance: w.instance, cursor: cursor, background: w.brush, class: uintptr(unsafe.Pointer(className))}
+	class := wndClass{proc: syscall.NewCallback(w.windowProc), instance: w.instance, icon: win(user32, "LoadIconW", w.instance, 1), cursor: cursor, background: w.brush, class: uintptr(unsafe.Pointer(className))}
 	registered := win(user32, "RegisterClassW", unsafe.Pointer(&class))
 	runtime.KeepAlive(className)
 	if registered == 0 {
@@ -177,10 +176,8 @@ func (w *desktopWin) makeControls() bool {
 	w.install = w.child("BUTTON", "Download game", 35, 270, 172, 42, idDownload, 0x10000)
 	w.play = w.child("BUTTON", "Play", 219, 270, 145, 42, idPlay, 0x10001)
 	w.check = w.child("BUTTON", "Check for updates", 376, 270, 209, 42, idCheck, 0x10000)
-	w.profile = w.child("STATIC", "", 35, 319, 550, 24, 0, 0)
-	w.signin = w.child("BUTTON", "Sign in or create an account", 35, 354, 250, 42, idSignIn, 0x10000)
 	w.uninstall = w.child("BUTTON", "Uninstall game", 373, 354, 212, 42, idUninstall, 0x10000)
-	return w.uninstall != 0 && w.status != 0 && w.version != 0 && w.progress != 0 && w.install != 0 && w.play != 0 && w.check != 0 && w.profile != 0 && w.signin != 0
+	return w.uninstall != 0 && w.status != 0 && w.version != 0 && w.progress != 0 && w.install != 0 && w.play != 0 && w.check != 0
 }
 func (w *desktopWin) refresh() {
 	state := w.app.snapshot()
@@ -190,11 +187,9 @@ func (w *desktopWin) refresh() {
 	w.rendered = state
 	win(user32, "SetWindowTextW", w.status, wide(state.Message))
 	win(user32, "SetWindowTextW", w.version, wide(state.versions()))
-	win(user32, "SetWindowTextW", w.profile, wide(state.profile()))
-	win(user32, "SetWindowTextW", w.signin, wide(state.signInTitle()))
 	win(user32, "SetWindowTextW", w.install, wide(state.installTitle()))
 	win(user32, "EnableWindow", w.install, flag(state.CanInstall))
-	win(user32, "EnableWindow", w.play, flag(state.Installed != "" && state.Username != ""))
+	win(user32, "EnableWindow", w.play, flag(state.Installed != ""))
 	win(user32, "EnableWindow", w.check, flag(!state.Busy))
 	win(user32, "EnableWindow", w.uninstall, flag(!state.Busy && state.Installed != ""))
 	win(user32, "ShowWindow", w.progress, 5*flag(state.Busy && state.Progress > 0))
@@ -224,11 +219,7 @@ func (w *desktopWin) windowProc(hwnd uintptr, msg uint32, wp, lp uintptr) uintpt
 			if answer == 6 {
 				action = "uninstall"
 			}
-		case idSignIn:
-			action = "signin"
-			if w.app.snapshot().Username != "" {
-				action = "signout"
-			}
+
 		}
 		if action != "" {
 			w.app.action(action)
