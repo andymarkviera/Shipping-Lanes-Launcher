@@ -15,4 +15,4 @@ Game releases and launcher releases live in separate repositories. Keep the laun
 
 ## Build
 
-The launcher is written in Go. Build the Windows executable with GOOS=windows, GOARCH=amd64, CGO_ENABLED=0 and the linker flag -H=windowsgui. For macOS, build Darwin amd64 and arm64 as launcher-darwin-amd64 and launcher-darwin-arm64, then run package-macos.py with the directory containing both executables.
+The launcher is written in Go. Build the Windows executable with GOOS=windows, GOARCH=amd64, CGO_ENABLED=0 and the linker flag -H=windowsgui. For macOS, build Darwin amd64 and arm64 as launcher-darwin-amd64 and launcher-darwin-arm64, then run package-macos.py with the directory containing both executables. Keep the checked-in `app_icon.icns` beside the packaging script. The Windows build picks up `appicon_windows_amd64.syso` automatically.

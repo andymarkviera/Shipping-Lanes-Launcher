@@ -122,8 +122,10 @@ func desktopWindow(app *launcher) error {
 	defer win(gdi32, "DeleteObject", w.brush)
 	w.decodeLogo()
 	cursor := win(user32, "LoadCursorW", 0, 32512)
+	const appIconID = 1 // RT_GROUP_ICON in appicon_windows_amd64.syso.
+	icon := win(user32, "LoadIconW", w.instance, appIconID)
 	className := wide("ShippingLanesDesktop")
-	class := wndClass{proc: syscall.NewCallback(w.windowProc), instance: w.instance, cursor: cursor, background: w.brush, class: uintptr(unsafe.Pointer(className))}
+	class := wndClass{proc: syscall.NewCallback(w.windowProc), instance: w.instance, icon: icon, cursor: cursor, background: w.brush, class: uintptr(unsafe.Pointer(className))}
 	registered := win(user32, "RegisterClassW", unsafe.Pointer(&class))
 	runtime.KeepAlive(className)
 	if registered == 0 {
